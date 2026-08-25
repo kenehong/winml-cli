@@ -428,7 +428,7 @@ def test_fallback_preserves_caller_identity_and_consumes_code_revision(tmp_path:
 def test_transformers5_rejects_legacy_auth_token_keyword() -> None:
     with (
         patch("transformers.PretrainedConfig.get_config_dict") as get_config_dict,
-        pytest.raises(ValueError, match="use_auth_token.*not supported"),
+        pytest.raises(ValueError, match=r"use_auth_token.*not supported"),
     ):
         load_hf_config(
             _FailingAutoConfig,
