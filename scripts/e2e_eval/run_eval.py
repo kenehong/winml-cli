@@ -297,6 +297,21 @@ _VAIP_CACHE = (
 )
 _TEMP_DIR = Path(os.environ.get("TEMP", os.environ.get("TMP", tempfile.gettempdir())))
 _TEMP_PREFIXES = ("winmlcli_", "winmlcli_compat_")
+_CACHE_CLEAN_TARGETS: tuple[str, ...] = ("winml", "huggingface", "others")
+_CACHE_CLEAN_TARGET_SET = frozenset(_CACHE_CLEAN_TARGETS)
+
+
+def _resolve_clean_cache_targets(raw_targets: list[str] | None) -> set[str]:
+    """Normalize ``--clean-cache`` values into target names.
+
+    ``None`` means the flag was not passed (cleanup disabled).
+    ``[]`` means the flag was passed without values (legacy behavior: clean all).
+    """
+    if raw_targets is None:
+        return set()
+    if not raw_targets:
+        return set(_CACHE_CLEAN_TARGET_SET)
+    return {target.lower() for target in raw_targets}
 
 
 def _is_no_space_error(proc: dict) -> bool:
@@ -305,9 +320,23 @@ def _is_no_space_error(proc: dict) -> bool:
     return any(pat in combined for pat in _NO_SPACE_PATTERNS)
 
 
-def _clear_disk_caches() -> None:
-    """Delete HuggingFace, WinML, VitisAI EP caches and leaked temp files."""
-    for cache_dir in (_HF_CACHE, _WINML_CACHE, _VAIP_CACHE):
+def _clear_disk_caches(targets: set[str] | None = None) -> None:
+    """Delete selected caches and leaked temp files.
+
+    ``targets`` accepts: ``winml``, ``huggingface``, ``others``.
+    ``None`` (or an empty set) keeps legacy behavior and clears all targets.
+    """
+    selected = set(_CACHE_CLEAN_TARGET_SET) if not targets else set(targets)
+
+    cache_dirs: list[Path | None] = []
+    if "huggingface" in selected:
+        cache_dirs.append(_HF_CACHE)
+    if "winml" in selected:
+        cache_dirs.append(_WINML_CACHE)
+    if "others" in selected:
+        cache_dirs.append(_VAIP_CACHE)
+
+    for cache_dir in cache_dirs:
         if cache_dir is not None and cache_dir.exists():
             safe_print(f"  [cleanup] Removing cache: {cache_dir}")
             try:
@@ -315,6 +344,9 @@ def _clear_disk_caches() -> None:
                 safe_print(f"  [cleanup] Removed: {cache_dir}")
             except OSError as exc:
                 safe_print(f"  [cleanup] Warning: could not remove {cache_dir}: {exc}")
+
+    if "others" not in selected:
+        return
 
     # Clean leaked temp directories/files (winmlcli_*, winmlcli_compat_*, tmp*.onnx*)
     if _TEMP_DIR.is_dir():
@@ -1475,6 +1507,9 @@ def _run_build_only(entries: list[ModelEntry], args: argparse.Namespace) -> None
     results_path = output_dir / "build_only_results.json"
     results: dict = _load_results(results_path)
     run_stamp = _slugify_version(args.run_stamp or date.today().strftime("%Y%m%d"))
+    clean_cache_targets: set[str] = getattr(
+        args, "clean_cache_targets", _resolve_clean_cache_targets(args.clean_cache)
+    )
 
     # Verify feed prerequisites once, up front. --upload exists to keep disk
     # bounded, so a broken az setup must abort (not silently fall back to
@@ -1719,8 +1754,10 @@ def _run_build_only(entries: list[ModelEntry], args: argparse.Namespace) -> None
         # Clean caches once per model (after all EP combos finish), not per
         # combo: combos share the same HF download, so clearing between
         # combos forces redundant re-downloads of the same weights.
-        if args.clean_cache:
-            _clear_disk_caches()
+        if clean_cache_targets:
+            if "others" in clean_cache_targets:
+                _clean_stray_cwd_artifacts(Path.cwd())
+            _clear_disk_caches(clean_cache_targets)
 
     tail = (
         f" | uploaded {uploaded}, upload-failed {upload_fail}, upload-timeout {upload_timeout}"
@@ -2921,11 +2958,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--clean-cache",
         dest="clean_cache",
-        action="store_true",
+        nargs="*",
+        metavar="TARGET",
+        choices=list(_CACHE_CLEAN_TARGETS),
         help=(
-            "After each job, delete HF/winml caches and stray scratch models "
-            "libraries leak into the cwd (UUID-named *.onnx/*.data, QNN "
-            "EP-context dumps, sym_shape_infer_temp) to keep disk bounded."
+            "After each job, delete selected caches. TARGET can be one or more of "
+            "winml, huggingface, others (others = VitisAI cache + temp/cwd leaked "
+            "scratch files). Use --clean-cache with no TARGET to keep legacy behavior "
+            "and clear all."
         ),
     )
     parser.add_argument("--list", action="store_true", help="List filtered models and exit")
@@ -2985,6 +3025,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run E2E evaluation pipeline."""
     args = parse_args()
+    clean_cache_targets = _resolve_clean_cache_targets(args.clean_cache)
+    args.clean_cache_targets = clean_cache_targets
 
     # 1. Load registry
     if args.hf_model:
@@ -3178,11 +3220,12 @@ def main() -> None:
         )
     else:
         safe_print("Recipes: disabled (winml config for all builds)")
-    if args.clean_cache:
-        safe_print("Cache cleanup: ON (winml/HF caches + stray cwd models cleaned)")
+    if clean_cache_targets:
+        safe_print(f"Cache cleanup: ON ({', '.join(sorted(clean_cache_targets))})")
         # Sweep any stray scratch models left in the cwd by a prior interrupted
         # run so a resumed run does not start from an already-polluted root.
-        _clean_stray_cwd_artifacts(Path.cwd())
+        if "others" in clean_cache_targets:
+            _clean_stray_cwd_artifacts(Path.cwd())
     if retry_types is not None:
         if retry_types:
             safe_print(f"Retry mode: {', '.join(sorted(retry_types))}")
@@ -3415,9 +3458,10 @@ def main() -> None:
         else:
             safe_print(f"  [acc only]{acc_tag}")
 
-        if args.clean_cache:
-            _clean_stray_cwd_artifacts(Path.cwd())
-            _clear_disk_caches()
+        if clean_cache_targets:
+            if "others" in clean_cache_targets:
+                _clean_stray_cwd_artifacts(Path.cwd())
+            _clear_disk_caches(clean_cache_targets)
 
     run_duration = time.perf_counter() - run_start
 

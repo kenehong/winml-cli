@@ -121,6 +121,7 @@ uv run python scripts/e2e_eval/run_eval.py --update-baseline --eval-type accurac
 | `--device` | `auto` | Target device |
 | `--ep` | — | Execution provider (e.g. `qnn`, `dml`, `openvino`); applied at perf/eval time |
 | `--timeout` | 600 | Per-subprocess timeout (seconds) |
+| `--clean-cache [TARGET ...]` | off | Clean caches after each job. `TARGET`: `winml`, `huggingface`, `others` (others = VitisAI cache + temp/cwd leaked scratch files). Use `--clean-cache` without TARGET to clear all (legacy behavior). |
 | `--update-baseline` | off | Offline mode: refresh `cache/baseline_cache.json` via the PyTorch baseline, then exit (no build/perf/eval) |
 | `--list` | off | List models and exit |
 | `--verbose` | off | Print stderr for failed models |
