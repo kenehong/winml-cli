@@ -16,7 +16,7 @@ See the [README](./README.md#getting-started) for prerequisites and installation
 ```bash
 git clone https://github.com/microsoft/winml-cli.git
 cd winml-cli
-uv sync
+uv sync --locked
 uv run pre-commit install
 ```
 
